@@ -1,0 +1,99 @@
+/* ============================================================
+   Theme Variables
+   ============================================================ */
+
+/* Dark theme (default / Transylvanian castle) */
+:root,
+[data-theme="dark"] {
+  --bg-primary: #12121e;
+  --bg-secondary: #1a1a2e;
+  --bg-elevated: #1e1e32;
+  --bg-input: #1a1a2e;
+  --border: #2a2a3e;
+  --border-input: #333;
+  --text-primary: #f0f0f5;
+  --text-secondary: #e0e0e8;
+  --text-muted: #888;
+  --text-dimmed: #666;
+  --text-placeholder: #555;
+  --accent: #f9b72b;
+  --accent-hover: #ffc94d;
+  --accent-text: #1a1a2e;
+  --error: #ff4d6a;
+  --warning: #ffa726;
+  --info: #42a5f5;
+  --success-bg: #1a2e1a;
+  --success-border: #2e6b2e;
+  --success-text: #a5d6a7;
+  --success-text-dim: #81c784;
+  --success-icon: #66bb6a;
+  --parse-bg: #2a2230;
+  --parse-border: #6b4c8a;
+  --parse-text: #d4a0f5;
+  --parse-text-dim: #a080c0;
+  --tooltip-bg: #1e1e32;
+  --tooltip-border: #444;
+  --shadow: rgba(0, 0, 0, 0.5);
+
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color-scheme: dark;
+  color: var(--text-secondary);
+  background-color: var(--bg-primary);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Light theme (whimsical) */
+[data-theme="light"] {
+  --bg-primary: #faf8f4;
+  --bg-secondary: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-input: #ffffff;
+  --border: #e0ddd6;
+  --border-input: #ccc;
+  --text-primary: #2d2a26;
+  --text-secondary: #3d3a36;
+  --text-muted: #8a8680;
+  --text-dimmed: #aaa69e;
+  --text-placeholder: #bbb7b0;
+  --accent: #e8a317;
+  --accent-hover: #d4940f;
+  --accent-text: #ffffff;
+  --error: #d93251;
+  --warning: #d48806;
+  --info: #2980b9;
+  --success-bg: #eaf7ea;
+  --success-border: #94d494;
+  --success-text: #2e7d32;
+  --success-text-dim: #4caf50;
+  --success-icon: #43a047;
+  --parse-bg: #f3ecf9;
+  --parse-border: #c9a7e3;
+  --parse-text: #7b3fad;
+  --parse-text-dim: #9b72c0;
+  --tooltip-bg: #ffffff;
+  --tooltip-border: #ddd;
+  --shadow: rgba(0, 0, 0, 0.12);
+
+  color-scheme: light;
+  color: var(--text-secondary);
+  background-color: var(--bg-primary);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+#root {
+  width: 100%;
+}
