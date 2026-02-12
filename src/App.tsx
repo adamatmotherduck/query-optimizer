@@ -176,7 +176,7 @@ function App() {
   );
 
   const hasFindings = result && result.findings.length > 0;
-  const isClean = result && result.findings.length === 0 && !result.parseError;
+  const isClean = result && result.findings.length === 0;
 
   return (
     <div className="app" onKeyDown={handleKeyDown}>
@@ -220,16 +220,6 @@ function App() {
 
         {result && (
           <section className="results-section">
-            {result.parseError && (
-              <div className="parse-warning">
-                <strong>Parse note:</strong> {result.parseError}
-                <br />
-                <span className="parse-warning-sub">
-                  Pattern-based analysis was still performed. Some AST-based checks may be missing.
-                </span>
-              </div>
-            )}
-
             {isClean && (
               <div className="clean-result">
                 <span className="clean-icon">{'\u2713'}</span>
