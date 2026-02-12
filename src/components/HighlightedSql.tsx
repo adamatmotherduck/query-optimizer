@@ -73,12 +73,28 @@ const severityColors: Record<string, string> = {
 
 export default function HighlightedSql({ sql, findings, focusedRuleId, onFocusHandled }: HighlightedSqlProps) {
   const [activeIdx, setActiveIdx] = useState<number | null>(null);
+  const [tooltipPos, setTooltipPos] = useState<{ top: number; left: number } | null>(null);
   const segments = useMemo(() => buildSegments(sql, findings), [sql, findings]);
   const issueRefs = useRef<Map<string, HTMLSpanElement>>(new Map());
 
-  const handleClick = useCallback((idx: number) => {
-    setActiveIdx((prev) => (prev === idx ? null : idx));
+  const showTooltip = useCallback((idx: number, el: HTMLSpanElement) => {
+    setActiveIdx(idx);
+    const rect = el.getBoundingClientRect();
+    setTooltipPos({ top: rect.bottom + 8, left: rect.left });
   }, []);
+
+  const hideTooltip = useCallback(() => {
+    setActiveIdx(null);
+    setTooltipPos(null);
+  }, []);
+
+  const handleClick = useCallback((idx: number, el: HTMLSpanElement) => {
+    if (activeIdx === idx) {
+      hideTooltip();
+    } else {
+      showTooltip(idx, el);
+    }
+  }, [activeIdx, hideTooltip, showTooltip]);
 
   // When focusedRuleId changes from the FindingsPanel, scroll to and pulse that span
   useEffect(() => {
@@ -89,7 +105,7 @@ export default function HighlightedSql({ sql, findings, focusedRuleId, onFocusHa
       el.classList.add('pulse');
       // Also activate the tooltip
       const idx = segments.findIndex((s) => s.finding?.ruleId === focusedRuleId);
-      if (idx !== -1) setActiveIdx(idx);
+      if (idx !== -1) showTooltip(idx, el);
       const timer = setTimeout(() => {
         el.classList.remove('pulse');
         onFocusHandled?.();
@@ -97,9 +113,12 @@ export default function HighlightedSql({ sql, findings, focusedRuleId, onFocusHa
       return () => clearTimeout(timer);
     }
     onFocusHandled?.();
-  }, [focusedRuleId, onFocusHandled, segments]);
+  }, [focusedRuleId, onFocusHandled, segments, showTooltip]);
 
   if (!sql) return null;
+
+  const activeFinding = activeIdx !== null ? segments[activeIdx]?.finding : null;
+  const activeColor = activeFinding ? (severityColors[activeFinding.severity] || '#42a5f5') : '#42a5f5';
 
   return (
     <div className="highlighted-sql-container">
@@ -126,31 +145,38 @@ export default function HighlightedSql({ sql, findings, focusedRuleId, onFocusHa
                   cursor: 'pointer',
                   position: 'relative',
                 }}
-                onClick={() => handleClick(i)}
-                onMouseEnter={() => setActiveIdx(i)}
-                onMouseLeave={() => setActiveIdx(null)}
+                onClick={(e) => handleClick(i, e.currentTarget)}
+                onMouseEnter={(e) => showTooltip(i, e.currentTarget)}
+                onMouseLeave={hideTooltip}
               >
                 {seg.text}
-                {isActive && (
-                  <span
-                    className="sql-tooltip"
-                    style={{ borderLeftColor: color }}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <span className="tooltip-title" style={{ color }}>
-                      {seg.finding.title}
-                    </span>
-                    <span className="tooltip-message">{seg.finding.message}</span>
-                    <span className="tooltip-suggestion">
-                      <strong>Fix:</strong> {seg.finding.suggestion}
-                    </span>
-                  </span>
-                )}
               </span>
             );
           })}
         </code>
       </pre>
+      {activeFinding && tooltipPos && (
+        <span
+          className="sql-tooltip"
+          style={{
+            borderLeftColor: activeColor,
+            position: 'fixed',
+            top: tooltipPos.top,
+            left: tooltipPos.left,
+          }}
+          onMouseEnter={() => setActiveIdx(activeIdx)}
+          onMouseLeave={hideTooltip}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <span className="tooltip-title" style={{ color: activeColor }}>
+            {activeFinding.title}
+          </span>
+          <span className="tooltip-message">{activeFinding.message}</span>
+          <span className="tooltip-suggestion">
+            <strong>Fix:</strong> {activeFinding.suggestion}
+          </span>
+        </span>
+      )}
     </div>
   );
 }

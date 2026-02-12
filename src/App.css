@@ -301,10 +301,8 @@
 
 /* --- Tooltip --- */
 .sql-tooltip {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  z-index: 100;
+  /* position: fixed is set inline with computed top/left */
+  z-index: 10000;
   min-width: 320px;
   max-width: 480px;
   padding: 14px 16px;
