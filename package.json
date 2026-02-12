@@ -10,7 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "node-sql-parser": "^5.4.0",
+    "node-sql-parser": "file:../node-sql-parser-duckdb",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

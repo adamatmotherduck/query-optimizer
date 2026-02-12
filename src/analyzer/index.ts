@@ -1,5 +1,7 @@
-// Import only the PostgreSQL grammar to shrink the bundle (~300KB vs ~2.8MB)
-import { Parser } from 'node-sql-parser/build/postgresql';
+// Import only the DuckDB grammar to shrink the bundle (~330KB vs ~2.8MB)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+import * as sqlParser from 'node-sql-parser/build/duckdb';
+const Parser = (sqlParser as any).Parser;
 import { runRules } from './rules';
 import type { AnalysisResult } from './types';
 
@@ -31,8 +33,9 @@ function replaceBalancedCall(s: string, funcName: string, replacement: string): 
 }
 
 /**
- * Preprocess SQL to remove DuckDB-specific syntax that the PostgreSQL
- * grammar in node-sql-parser cannot handle, so we get an AST more often.
+ * Preprocess SQL to remove DuckDB-specific syntax that the grammar
+ * cannot yet handle, so we get an AST more often.  Used as a fallback
+ * when the DuckDB grammar's native parsing fails.
  * The original SQL is still passed to the regex-based rules untouched.
  */
 function preprocessForParser(sql: string): string {
@@ -74,12 +77,17 @@ export function analyze(sql: string): AnalysisResult {
   let ast: any = null;
   let parseError: string | null = null;
 
-  // Try parsing the preprocessed SQL to get an AST
-  const sanitized = preprocessForParser(trimmed);
+  // Try parsing directly with the DuckDB grammar first
   try {
-    ast = parser.astify(sanitized);
-  } catch (e) {
-    parseError = e instanceof Error ? e.message : 'Failed to parse SQL';
+    ast = parser.astify(trimmed, { database: 'duckdb' });
+  } catch {
+    // Fall back to preprocessing for syntax not yet in the grammar
+    const sanitized = preprocessForParser(trimmed);
+    try {
+      ast = parser.astify(sanitized, { database: 'duckdb' });
+    } catch (e) {
+      parseError = e instanceof Error ? e.message : 'Failed to parse SQL';
+    }
   }
 
   // Regex-based rules always run against the ORIGINAL SQL
