@@ -1044,6 +1044,356 @@ function regexRules(sql: string): Finding[] {
     }
   }
 
+  // =========================================================================
+  // WINDOW FUNCTION WITHOUT PARTITION BY
+  // =========================================================================
+
+  // 41. Window function without PARTITION BY — runs over entire result set
+  const windowOverMatches = findAll(sql, /\b(?:ROW_NUMBER|RANK|DENSE_RANK|NTILE|LAG|LEAD|FIRST_VALUE|LAST_VALUE|SUM|AVG|COUNT|MIN|MAX)\s*\([^)]*\)\s*OVER\s*\(\s*(?:ORDER\s+BY\b)/gi);
+  if (windowOverMatches.length > 0) {
+    // Only fire if there's an OVER( without PARTITION BY before the ORDER BY
+    const hasPartitionless = windowOverMatches.some((m) => !/PARTITION\s+BY/i.test(m));
+    if (hasPartitionless) {
+      findings.push(
+        finding(
+          'window-no-partition',
+          'warning',
+          'Window function without PARTITION BY',
+          'A window function with ORDER BY but no PARTITION BY operates over the entire result set as a single partition. DuckDB must buffer all rows to compute the window, which can be very memory-intensive on large datasets.',
+          'Add a PARTITION BY clause to limit the window scope. If you intentionally want a global window, be aware of the memory cost on large tables.',
+          'memory',
+          windowOverMatches[0],
+        ),
+      );
+      const loc = locate(sql, windowOverMatches[0]);
+      if (loc) findings[findings.length - 1].offset = loc;
+    }
+  }
+
+  // =========================================================================
+  // REPEATED TABLE SCAN
+  // =========================================================================
+
+  // 42. Same table scanned in multiple CTEs
+  const tableRefs = findAll(sql, /\bFROM\s+(\w+)\b/gi).map((m) => m.replace(/^FROM\s+/i, '').toLowerCase());
+  const joinRefs = findAll(sql, /\bJOIN\s+(\w+)\b/gi).map((m) => m.replace(/^JOIN\s+/i, '').toLowerCase());
+  const allTableRefs = [...tableRefs, ...joinRefs];
+  // Exclude common CTE names (single-word aliases) by checking for repeated real table names
+  const tableCounts = new Map<string, number>();
+  const cteNames = new Set(findAll(sql, /\b(\w+)\s+AS\s*\(/gi).map((m) => m.replace(/\s+AS\s*\(/i, '').toLowerCase()));
+  for (const t of allTableRefs) {
+    if (cteNames.has(t)) continue; // skip CTE self-references
+    if (['select', 'where', 'from', 'join', 'on', 'and', 'or', 'true', 'false', 'null'].includes(t)) continue;
+    tableCounts.set(t, (tableCounts.get(t) || 0) + 1);
+  }
+  const repeatedTables = [...tableCounts.entries()].filter(([, count]) => count >= 3);
+  if (repeatedTables.length > 0) {
+    const tableList = repeatedTables.map(([name, count]) => `${name} (${count}x)`).join(', ');
+    findings.push(
+      finding(
+        'repeated-table-scan',
+        'info',
+        'Same table scanned multiple times',
+        `Table(s) ${tableList} are referenced 3+ times. Each reference may trigger a separate scan. If these scans read similar data, this wastes I/O and memory.`,
+        'Materialize the shared data into a CTE or temp table once, then reference the CTE downstream. DuckDB auto-materializes identical CTEs, but different filters on the same table still cause separate scans.',
+        'performance',
+      ),
+    );
+  }
+
+  // =========================================================================
+  // LARGE OFFSET PAGINATION
+  // =========================================================================
+
+  // 43. OFFSET with large values — inefficient pagination
+  const offsetMatches = findAll(sql, /\bOFFSET\s+(\d+)/gi);
+  for (const m of offsetMatches) {
+    const val = parseInt(m.replace(/^OFFSET\s+/i, ''), 10);
+    if (val >= 10000) {
+      findings.push(
+        finding(
+          'large-offset-pagination',
+          'warning',
+          `Large OFFSET (${val.toLocaleString()})`,
+          `OFFSET ${val.toLocaleString()} requires DuckDB to read and discard ${val.toLocaleString()} rows before returning results. The further you paginate, the slower each page gets.`,
+          'Use keyset (cursor) pagination instead: WHERE id > :last_seen_id ORDER BY id LIMIT :page_size. This is O(1) per page regardless of depth.',
+          'performance',
+          m,
+        ),
+      );
+      const loc = locate(sql, m);
+      if (loc) findings[findings.length - 1].offset = loc;
+      break; // one finding is enough
+    }
+  }
+
+  // =========================================================================
+  // CAST IN JOIN KEY
+  // =========================================================================
+
+  // 44. CAST or :: in JOIN ON condition — prevents pushdown
+  const joinOnCast = /\bJOIN\b[\s\S]*?\bON\b[\s\S]*?(?:CAST\s*\([^)]*\)|::\s*\w+)\s*=/gi;
+  if (joinOnCast.test(sql)) {
+    findings.push(
+      finding(
+        'cast-in-join-key',
+        'warning',
+        'Type cast in JOIN condition',
+        'Casting a column in a JOIN ON clause (e.g., CAST(a.id AS VARCHAR) = b.id) prevents the optimizer from using hash joins efficiently and blocks filter pushdown. It also forces a per-row type conversion.',
+        'Ensure join columns have matching types at the schema level. If needed, cast once in a CTE before the join rather than inside the ON clause.',
+        'performance',
+      ),
+    );
+  }
+
+  // =========================================================================
+  // CASE WHEN INSTEAD OF FILTER
+  // =========================================================================
+
+  // 45. SUM(CASE WHEN ... THEN 1 ELSE 0 END) — use FILTER clause
+  const caseAggPattern = /\b(?:SUM|COUNT)\s*\(\s*CASE\s+WHEN\b/gi;
+  const caseAggMatches = findAll(sql, caseAggPattern);
+  if (caseAggMatches.length > 0) {
+    findings.push(
+      finding(
+        'case-when-instead-of-filter',
+        'info',
+        'CASE WHEN inside aggregate — consider FILTER',
+        `This query uses ${caseAggMatches.length} conditional aggregate(s) via CASE WHEN. DuckDB supports the SQL standard FILTER clause which is more readable and expresses the same intent.`,
+        'Replace SUM(CASE WHEN x THEN 1 ELSE 0 END) with COUNT(*) FILTER (WHERE x), or SUM(col) FILTER (WHERE condition). The FILTER clause is clearer and may optimize slightly better.',
+        'best-practice',
+        caseAggMatches[0],
+      ),
+    );
+    const loc = locate(sql, caseAggMatches[0]);
+    if (loc) findings[findings.length - 1].offset = loc;
+  }
+
+  // =========================================================================
+  // INTERMEDIATE ORDER BY IN CTE
+  // =========================================================================
+
+  // 46. ORDER BY inside a CTE — usually wasted work
+  const cteOrderByPattern = /\bAS\s*\([\s\S]*?\bORDER\s+BY\b[\s\S]*?\)/gi;
+  const cteOrderByMatches = findAll(sql, cteOrderByPattern);
+  // Only flag if there's also an ORDER BY or JOIN in the outer query (meaning the CTE order is likely discarded)
+  if (cteOrderByMatches.length > 0 && /\)\s*(?:,[\s\S]*?\))?\s*SELECT[\s\S]*?\b(?:ORDER\s+BY|JOIN)\b/i.test(sql)) {
+    findings.push(
+      finding(
+        'intermediate-order-by',
+        'info',
+        'ORDER BY inside CTE may be wasted',
+        'An ORDER BY inside a CTE is not guaranteed to be preserved when the outer query re-sorts or joins the CTE results. The intermediate sort is a blocking operator that buffers all rows for no benefit.',
+        'Remove ORDER BY from CTEs unless the CTE uses LIMIT (top-N pattern). Move the final sort to the outermost query.',
+        'performance',
+      ),
+    );
+  }
+
+  // =========================================================================
+  // SELF-JOIN AS WINDOW
+  // =========================================================================
+
+  // 47. Self-join to get prev/next row — use LAG/LEAD
+  const selfJoinPattern = /\b(\w+)\s+(\w+)\s*\n?\s*(?:INNER\s+)?JOIN\s+\1\s+(\w+)\s+ON\s+\2\.(\w+)\s*=\s*\3\.\4\s*(?:\+|-)\s*1/gi;
+  if (selfJoinPattern.test(sql)) {
+    findings.push(
+      finding(
+        'self-join-as-window',
+        'info',
+        'Self-join for prev/next row — consider LAG/LEAD',
+        'This query joins a table to itself with an offset of +/- 1 to access adjacent rows. This duplicates the scan and requires a join. DuckDB window functions LAG() and LEAD() do this more efficiently in a single pass.',
+        'Replace with: LAG(col) OVER (ORDER BY id) for the previous row, or LEAD(col) OVER (ORDER BY id) for the next row.',
+        'performance',
+      ),
+    );
+  }
+
+  // =========================================================================
+  // LIKE PREFIX — USE starts_with()
+  // =========================================================================
+
+  // 48. LIKE 'prefix%' — suggest starts_with() for clarity
+  const likePrefixMatches = findAll(sql, /\bLIKE\s+'[^%'][^']*%'/gi);
+  if (likePrefixMatches.length > 0) {
+    findings.push(
+      finding(
+        'like-prefix-use-starts-with',
+        'info',
+        'LIKE prefix pattern — consider starts_with()',
+        'LIKE \'prefix%\' works but DuckDB\'s starts_with(col, \'prefix\') makes the intent explicit and is equally optimized. It also avoids accidental wildcard issues if the prefix contains % or _ characters.',
+        'Replace col LIKE \'prefix%\' with starts_with(col, \'prefix\') for clarity.',
+        'best-practice',
+        likePrefixMatches[0],
+      ),
+    );
+    const loc = locate(sql, likePrefixMatches[0]);
+    if (loc) findings[findings.length - 1].offset = loc;
+  }
+
+  // =========================================================================
+  // LARGE CASE WHEN CHAIN
+  // =========================================================================
+
+  // 49. 10+ CASE WHEN branches — suggests a lookup table
+  const caseWhenBranches = countMatches(sql, /\bWHEN\b/gi);
+  const caseCount = countMatches(sql, /\bCASE\b/gi);
+  // Only fire if there are many WHENs relative to CASEs (i.e., a single CASE with many branches)
+  if (caseCount > 0 && caseWhenBranches >= 10 && caseWhenBranches / caseCount >= 8) {
+    findings.push(
+      finding(
+        'large-case-chain',
+        'info',
+        `Large CASE expression (${caseWhenBranches} branches)`,
+        `A CASE expression with ${caseWhenBranches} WHEN branches is hard to read and maintain. It often represents a lookup/mapping that belongs in a reference table.`,
+        'Move the mapping into a CTE or lookup table and JOIN: WITH mapping AS (SELECT * FROM (VALUES (\'a\', 1), (\'b\', 2)) AS t(key, val)) SELECT ... FROM main JOIN mapping ON ...',
+        'best-practice',
+      ),
+    );
+  }
+
+  // =========================================================================
+  // GROUP BY ORDINAL
+  // =========================================================================
+
+  // 50. GROUP BY 1, 2, 3 — fragile positional references
+  if (/\bGROUP\s+BY\s+\d+(?:\s*,\s*\d+){2,}/i.test(sql)) {
+    findings.push(
+      finding(
+        'group-by-ordinal',
+        'info',
+        'GROUP BY with positional references',
+        'GROUP BY 1, 2, 3 uses column positions instead of names. This breaks silently when the SELECT list is reordered and makes the query harder to read.',
+        'Use GROUP BY ALL (DuckDB auto-groups by all non-aggregated columns) or use explicit column names.',
+        'best-practice',
+      ),
+    );
+  }
+
+  // =========================================================================
+  // STRING CONCATENATION NULL PROPAGATION
+  // =========================================================================
+
+  // 51. || operator for string concat — NULL propagation
+  const concatOpCount = countMatches(sql, /\|\|/g);
+  if (concatOpCount >= 3) {
+    findings.push(
+      finding(
+        'string-concat-null',
+        'info',
+        'String concatenation with || — NULL propagation risk',
+        `The || operator is used ${concatOpCount} times. In SQL, if either operand is NULL, the result is NULL. This can cause unexpected data loss when concatenating columns that may contain NULLs.`,
+        'Use concat(a, b, c) which treats NULL as empty string, or use COALESCE on individual operands: COALESCE(a, \'\') || COALESCE(b, \'\').',
+        'best-practice',
+        '||',
+      ),
+    );
+    const loc = locate(sql, '||');
+    if (loc) findings[findings.length - 1].offset = loc;
+  }
+
+  // =========================================================================
+  // REGEXP FOR SIMPLE PATTERNS
+  // =========================================================================
+
+  // 52. regexp_matches for simple prefix/suffix/contains — overkill
+  const regexpMatches = findAll(sql, /\bregexp_matches\s*\(\s*\w+\s*,\s*'(?:\^[\w]+|[\w]+\$|[\w]+)'\s*\)/gi);
+  if (regexpMatches.length > 0) {
+    findings.push(
+      finding(
+        'regexp-for-simple-pattern',
+        'info',
+        'regexp_matches() for simple pattern',
+        'regexp_matches() with a simple literal pattern (no special regex operators) is slower than string functions. Regular expressions have compilation and matching overhead that isn\'t needed for basic prefix, suffix, or contains checks.',
+        'Use starts_with(col, \'prefix\'), suffix(col, \'suffix\'), or contains(col, \'substr\') for simple patterns. Reserve regexp_matches() for complex patterns with alternation, quantifiers, or character classes.',
+        'performance',
+        regexpMatches[0],
+      ),
+    );
+    const loc = locate(sql, regexpMatches[0]);
+    if (loc) findings[findings.length - 1].offset = loc;
+  }
+
+  // =========================================================================
+  // COUNT(col) vs COUNT(*)
+  // =========================================================================
+
+  // 53. COUNT(col) — may unintentionally exclude NULLs
+  const countColMatches = findAll(sql, /\bCOUNT\s*\(\s*(?!DISTINCT\b|\*|\d)\w+(?:\.\w+)?\s*\)/gi);
+  if (countColMatches.length > 0) {
+    findings.push(
+      finding(
+        'count-col-vs-count-star',
+        'info',
+        'COUNT(column) excludes NULLs',
+        `COUNT(column) silently skips NULL values. If you want to count all rows (including those where the column is NULL), use COUNT(*). This is a common source of subtle undercounting.`,
+        'Use COUNT(*) to count all rows, or COUNT(column) only when you intentionally want to exclude NULLs. Add a comment if the NULL-exclusion is deliberate.',
+        'best-practice',
+        countColMatches[0],
+      ),
+    );
+    const loc = locate(sql, countColMatches[0]);
+    if (loc) findings[findings.length - 1].offset = loc;
+  }
+
+  // =========================================================================
+  // REMOTE PARQUET WITHOUT HIVE PARTITIONING
+  // =========================================================================
+
+  // 54. read_parquet with partition-like path but no hive_partitioning=true
+  const parquetWithPartitionPath = /\bread_parquet\s*\(\s*'[^']*(?:year=|month=|day=|date=|dt=|region=)[^']*'/gi;
+  if (parquetWithPartitionPath.test(sql) && !/hive_partitioning\s*[:=]\s*true/i.test(sql)) {
+    findings.push(
+      finding(
+        'read-parquet-no-hive',
+        'info',
+        'Hive-partitioned path without hive_partitioning=true',
+        'The file path contains partition-like patterns (year=, month=, etc.) but hive_partitioning is not enabled. Without it, DuckDB cannot use partition columns for predicate pushdown and will scan all files.',
+        'Add hive_partitioning=true: read_parquet(\'s3://bucket/table/**/*.parquet\', hive_partitioning=true). This lets DuckDB prune files based on partition column values in your WHERE clause.',
+        'network',
+      ),
+    );
+  }
+
+  // =========================================================================
+  // COPY TO WITHOUT COMPRESSION
+  // =========================================================================
+
+  // 55. COPY TO parquet without compression specified
+  const copyToParquet = /\bCOPY\b[\s\S]*?\bTO\b\s+'[^']*\.parquet'/gi;
+  if (copyToParquet.test(sql) && !/\b(?:CODEC|COMPRESSION)\b/i.test(sql)) {
+    findings.push(
+      finding(
+        'copy-to-no-compression',
+        'info',
+        'COPY TO Parquet without explicit compression',
+        'COPY TO a Parquet file without specifying COMPRESSION uses the default (snappy). For analytical workloads, zstd typically provides better compression ratios with similar read performance, reducing storage costs and network transfer times.',
+        'Add COMPRESSION ZSTD: COPY ... TO \'file.parquet\' (FORMAT PARQUET, COMPRESSION ZSTD). For maximum compatibility, SNAPPY is fine; for maximum compression, use ZSTD.',
+        'performance',
+      ),
+    );
+  }
+
+  // =========================================================================
+  // TIMESTAMP vs TIMESTAMPTZ COMPARISON
+  // =========================================================================
+
+  // 56. Mixing TIMESTAMP and TIMESTAMPTZ in comparisons
+  const hasTimestamp = /\bTIMESTAMP\b(?!\s*TZ|\s*WITH)/i.test(sql);
+  const hasTimestampTz = /\bTIMESTAMPTZ\b|\bTIMESTAMP\s+WITH\s+TIME\s+ZONE\b/i.test(sql);
+  if (hasTimestamp && hasTimestampTz) {
+    findings.push(
+      finding(
+        'timestamp-vs-timestamptz',
+        'warning',
+        'Mixing TIMESTAMP and TIMESTAMPTZ',
+        'This query references both TIMESTAMP (no timezone) and TIMESTAMPTZ (with timezone) types. When these are compared or joined, DuckDB implicitly converts TIMESTAMP to TIMESTAMPTZ using the session timezone, which can produce wrong results if the session timezone differs from the data\'s intended timezone.',
+        'Standardize on one type. Use TIMESTAMPTZ if data crosses timezones. Use AT TIME ZONE to convert explicitly: ts::TIMESTAMPTZ AT TIME ZONE \'UTC\'.',
+        'schema',
+      ),
+    );
+  }
+
   return findings;
 }
 

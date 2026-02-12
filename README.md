@@ -13,7 +13,7 @@ A client-side SQL analyzer that detects performance, memory, network, and best-p
 
 Everything runs in the browser — no backend, no telemetry.
 
-## Rules (40 total)
+## Rules (56 total)
 
 ### AST-based rules
 
@@ -39,6 +39,7 @@ Everything runs in the browser — no backend, no telemetry.
 | `non-spillable-median` | warning | `MEDIAN()`, `QUANTILE()`, `PERCENTILE_CONT/DISC()`, `MODE()` |
 | `non-spillable-pivot` | error | `PIVOT` (uses `LIST()` internally) |
 | `many-blocking-operators` | warning/error | 5+ or 8+ blocking operators in one query |
+| `window-no-partition` | warning | Window function without PARTITION BY — entire result set buffered |
 | `unnest-large-expansion` | warning | `UNNEST()` on columns — row count explosion |
 | `recursive-cte-no-limit` | warning | `WITH RECURSIVE` without termination guard |
 | `ctas-memory` | info | `CREATE TABLE AS SELECT` materializes fully |
@@ -60,9 +61,16 @@ Everything runs in the browser — no backend, no telemetry.
 | `not-in-subquery` | warning | `NOT IN (SELECT ...)` NULL semantics trap |
 | `correlated-subquery` | error | Correlated subquery re-executes per row |
 | `large-in-list` | warning | `IN (...)` with 50+ literal values |
+| `cast-in-join-key` | warning | Type cast in JOIN ON condition prevents pushdown |
 | `glob-many-files` | info | `**` glob on remote files |
 | `temporal-join-via-window` | info | Inequality join + window (use `ASOF JOIN`) |
 | `chained-select-star` | info | `SELECT *` through 2+ CTEs defeats column pruning |
+| `intermediate-order-by` | info | ORDER BY inside CTE — wasted sort |
+| `self-join-as-window` | info | Self-join for prev/next row (use `LAG`/`LEAD`) |
+| `repeated-table-scan` | info | Same table scanned 3+ times |
+| `large-offset-pagination` | warning | Large OFFSET — use keyset pagination |
+| `regexp-for-simple-pattern` | info | `regexp_matches()` for simple prefix/suffix |
+| `copy-to-no-compression` | info | `COPY TO` Parquet without explicit compression |
 
 **Network**
 
@@ -72,6 +80,7 @@ Everything runs in the browser — no backend, no telemetry.
 | `md-local-remote-transfer` | warning | Local file join with MotherDuck cloud table |
 | `read-remote-no-filter` | warning | Remote file scan without WHERE |
 | `multiple-remote-scans` | warning | 2+ remote file reads in one query |
+| `read-parquet-no-hive` | info | Partition-like path without `hive_partitioning=true` |
 | `md-cross-database-join` | info | Join across different database prefixes |
 
 **Best practice**
@@ -84,6 +93,12 @@ Everything runs in the browser — no backend, no telemetry.
 | `many-left-join-on-true` | info | 5+ `LEFT JOIN ... ON TRUE` |
 | `or-chain-instead-of-in` | info | 4+ ORs on same column (use `IN`) |
 | `between-timestamp` | info | `BETWEEN` on temporal columns (closed interval) |
+| `case-when-instead-of-filter` | info | `SUM(CASE WHEN ...)` — use `FILTER` clause |
+| `like-prefix-use-starts-with` | info | `LIKE 'prefix%'` — use `starts_with()` |
+| `large-case-chain` | info | 10+ CASE WHEN branches — use lookup table |
+| `group-by-ordinal` | info | `GROUP BY 1, 2, 3` — fragile positional refs |
+| `string-concat-null` | info | `\|\|` concat — NULL propagation risk |
+| `count-col-vs-count-star` | info | `COUNT(col)` silently excludes NULLs |
 
 **Schema**
 
@@ -94,6 +109,7 @@ Everything runs in the browser — no backend, no telemetry.
 | `moderate-json-extraction` | info | 8+ JSON extractions |
 | `json-each-expansion` | warning | `json_each()` row expansion |
 | `json-array-extract` | info | JSON array wildcard `[*]` extraction |
+| `timestamp-vs-timestamptz` | warning | Mixing `TIMESTAMP` and `TIMESTAMPTZ` types |
 
 ## Development
 
@@ -110,7 +126,7 @@ npm run lint      # eslint
 src/
   analyzer/
     types.ts        # Finding, AnalysisResult, Severity types
-    rules.ts        # All 40 rules (AST + regex)
+    rules.ts        # All 56 rules (AST + regex)
     index.ts        # analyze() entry point, parser setup
   components/
     SqlEditor.tsx   # Textarea input
